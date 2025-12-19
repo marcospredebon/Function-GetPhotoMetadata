@@ -46,6 +46,10 @@ def convert_to_degrees(value) -> float:
 def get_photo_metadata(req: func.HttpRequest) -> func.HttpResponse:
     """Recebe um parametro fileUrl, baixa a imagem, extrai EXIF e retorna JSON."""
     try:
+        debug_info = {}
+        debug_mode = str(req.params.get('debug', '')).lower() == 'true'
+        if debug_mode:
+            logger.info('Debug mode enabled for request')
         logger.info('GetPhotoMetadata called')
         # Obter parametro fileUrl de query ou do body
         file_url = req.params.get('fileUrl')
@@ -68,21 +72,33 @@ def get_photo_metadata(req: func.HttpRequest) -> func.HttpResponse:
         except requests.exceptions.RequestException as ex:
             logger.error('Error fetching fileUrl: %s', ex)
             logger.debug('fileUrl attempted: %s', file_url)
+            debug_info['fetch_error'] = str(ex)
+            if debug_mode:
+                return func.HttpResponse(json.dumps({'error': str(ex), 'debug': debug_info}), mimetype='application/json', status_code=502)
             return func.HttpResponse(f'Error fetching fileUrl: {ex}', status_code=502)
 
         # Verificar Content-Type antes de tentar abrir como imagem
         content_type = response.headers.get('Content-Type', '').split(';')[0].lower()
         content_length = response.headers.get('Content-Length')
         logger.info('Downloaded content-type=%s length=%s', content_type, content_length)
+        debug_info['content_type'] = content_type
+        debug_info['content_length'] = content_length
         if not content_type.startswith('image/'):
             logger.warning('URL did not return an image. Content-Type: %s', content_type)
+            if debug_mode:
+                return func.HttpResponse(json.dumps({'error': 'URL did not return an image', 'content_type': content_type, 'debug': debug_info}), mimetype='application/json', status_code=400)
             return func.HttpResponse(f'URL did not return an image. Content-Type: {content_type}', status_code=400)
 
         try:
             image = Image.open(BytesIO(response.content))
             logger.info('Image opened successfully: format=%s size=%s', image.format, image.size)
+            debug_info['image_format'] = image.format
+            debug_info['image_size'] = image.size
         except Exception as ex:
             logger.exception('Downloaded content is not a valid image')
+            debug_info['open_error'] = str(ex)
+            if debug_mode:
+                return func.HttpResponse(json.dumps({'error': 'Downloaded content is not a valid image', 'open_error': str(ex), 'debug': debug_info}), mimetype='application/json', status_code=400)
             return func.HttpResponse(f'Downloaded content is not a valid image: {ex}', status_code=400)
 
         # Extração EXIF
@@ -104,6 +120,8 @@ def get_photo_metadata(req: func.HttpRequest) -> func.HttpResponse:
             'latitude': lat,
             'longitude': lon
         }
+        if debug_mode:
+            result['debug'] = debug_info
         return func.HttpResponse(json.dumps(result), mimetype='application/json', status_code=200)
     except Exception as e:
         logger.exception('Unhandled exception in GetPhotoMetadata')

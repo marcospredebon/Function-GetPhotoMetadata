@@ -1,0 +1,81 @@
+import azure.functions as func
+import requests
+from PIL import Image, ExifTags
+from io import BytesIO
+import json
+
+# Instancia o app de funcoes
+app = func.FunctionApp()
+
+# Funcoes auxiliares para extrair EXIF
+def get_exif_data(image: Image.Image) -> dict:
+    """Extrai os dados EXIF de uma imagem PIL."""
+    exif_data = {}
+    try:
+        info = image._getexif()
+    except Exception:
+        info = None
+    if info:
+        for tag, value in info.items():
+            decoded = ExifTags.TAGS.get(tag, tag)
+            if decoded == "GPSInfo":
+                gps_data = {}
+                for t in value:
+                    sub_decoded = ExifTags.GPSTAGS.get(t, t)
+                    gps_data[sub_decoded] = value[t]
+                exif_data["GPSInfo"] = gps_data
+            else:
+                exif_data[decoded] = value
+    return exif_data
+
+def convert_to_degrees(value) -> float:
+    """Converte o formato de coordenadas GPS (graus, minutos, segundos) para float."""
+    try:
+        d, m, s = value
+        return d + (m / 60.0) + (s / 3600.0)
+    except Exception:
+        return None
+
+# Define a funcao HTTP trigger
+@app.function_name(name="GetPhotoMetadata")
+@app.route(route="GetPhotoMetadata", methods=["GET", "POST"], auth_level=func.AuthLevel.FUNCTION)
+def get_photo_metadata(req: func.HttpRequest) -> func.HttpResponse:
+    """Recebe um parametro fileUrl, baixa a imagem, extrai EXIF e retorna JSON."""
+    try:
+        # Obter parametro fileUrl de query ou do body
+        file_url = req.params.get('fileUrl')
+        if not file_url:
+            try:
+                req_body = req.get_json()
+            except ValueError:
+                req_body = {}
+            file_url = req_body.get('fileUrl')
+        if not file_url:
+            return func.HttpResponse('Missing fileUrl parameter', status_code=400)
+
+        # Baixar a imagem
+        response = requests.get(file_url)
+        image = Image.open(BytesIO(response.content))
+
+        # Extração EXIF
+        exif_data = get_exif_data(image)
+        date_time = exif_data.get('DateTime', None)
+        gps_info = exif_data.get('GPSInfo', {})
+        lat = lon = None
+        if gps_info:
+            if 'GPSLatitude' in gps_info and 'GPSLongitude' in gps_info:
+                lat = convert_to_degrees(gps_info.get('GPSLatitude'))
+                lon = convert_to_degrees(gps_info.get('GPSLongitude'))
+                if gps_info.get('GPSLatitudeRef') == 'S':
+                    lat = -lat if lat is not None else None
+                if gps_info.get('GPSLongitudeRef') == 'W':
+                    lon = -lon if lon is not None else None
+
+        result = {
+            'date_time': date_time,
+            'latitude': lat,
+            'longitude': lon
+        }
+        return func.HttpResponse(json.dumps(result), mimetype='application/json', status_code=200)
+    except Exception as e:
+        return func.HttpResponse(f'Error: {str(e)}', status_code=500)

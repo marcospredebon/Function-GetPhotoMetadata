@@ -53,9 +53,22 @@ def get_photo_metadata(req: func.HttpRequest) -> func.HttpResponse:
         if not file_url:
             return func.HttpResponse('Missing fileUrl parameter', status_code=400)
 
-        # Baixar a imagem
-        response = requests.get(file_url)
-        image = Image.open(BytesIO(response.content))
+        # Baixar a imagem com timeout e validações
+        try:
+            response = requests.get(file_url, timeout=10)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as ex:
+            return func.HttpResponse(f'Error fetching fileUrl: {ex}', status_code=502)
+
+        # Verificar Content-Type antes de tentar abrir como imagem
+        content_type = response.headers.get('Content-Type', '').split(';')[0].lower()
+        if not content_type.startswith('image/'):
+            return func.HttpResponse(f'URL did not return an image. Content-Type: {content_type}', status_code=400)
+
+        try:
+            image = Image.open(BytesIO(response.content))
+        except Exception as ex:
+            return func.HttpResponse(f'Downloaded content is not a valid image: {ex}', status_code=400)
 
         # Extração EXIF
         exif_data = get_exif_data(image)
